@@ -57,28 +57,33 @@ void coordinateMemory(){
 		"VIR_DOMAIN_MEMORY_STAT_MAJOR_FAULT",//when a page fault has to go to disk
 		"VIR_DOMAIN_MEMORY_STAT_MINOR_FAULT",
 		"VIR_DOMAIN_MEMORY_STAT_UNUSED", //amount of memory left unused by the system
-		"VIR_DOMAIN_MEMORY_STAT_AVAILABLE", //Total amount of usable memory as seen by the domain
+		"VIR_DOMAIN_MEMORY_STAT_AVAILABLE", //Total amount of usable memory as seen by the domain, in kB
 		"VIR_DOMAIN_MEMORY_STAT_ACTUAL_BALLOON", //current balloon value, in kB
 		"VIR_DOMAIN_MEMORY_STAT_RSS", //Resient set size of the process running the domain, in kB
 		"VIR_DOMAIN_MEMORY_STAT_USABLE", //how much the balloon can be inflated w/o pushing guest system to swap
 		"VIR_DOMAIN_MEMORY_STAT_LAST_UPDATE" //Timestamp of last update, in seconds
 	};
 	
+	//virDomainPtr dom = calloc(1,sizeof(virDomainPtr));
+	//numDomains = 1;
 	for(int i = 0; i < numDomains; i++){
 		virDomainPtr curDomain = domains[i];
 		if(!curDomain){
 			printf("Domain at %d is null\n",i);
-			exit(-1);
+			//exit(-1);
 		}
 		
 		int domainID = virDomainGetID(curDomain);
 		printf("Domain ID is %d\n",domainID);
 		//since there is no performance check, set the stat collection period to 1, then sleep
-		//printf("Setting memory stats period\n");
-		//virDomainSetMemoryStatsPeriod(curDomain,1,VIR_DOMAIN_AFFECT_CONFIG);
-		//printf("Sleeping for 1 second\n");
+		printf("Setting memory stats period\n");
+		//virDomainSetMemoryStatsPeriod(curDomain,1,VIR_DOMAIN_AFFECT_LIVE);
+		printf("Sleeping for 1 second\n");
 		//sleep(1);
 		//get all memory stats for this domain
+		
+		//max memory available
+		unsigned long maxMemAvailable = virDomainGetMaxMemory(curDomain);
 				
 		virDomainMemoryStatPtr stats = calloc(1, sizeof(virDomainMemoryStatPtr));
 		//memory stats
@@ -86,9 +91,10 @@ void coordinateMemory(){
 		int numStats = virDomainMemoryStats(curDomain, stats, 9, 0);
 		printf("Returned %d stats\n", numStats);		
 		
-		//need Available, unused
+		//need Available, unused, balloon size
 		unsigned long long curDomainAvailableMemory = 0;
 		unsigned long long curDomainUnusedMemory = 0;
+		unsigned long long curDomainBalloonSize = 0;
 		//loop through the stats, since you can't index by tag......
 		for(int j = 0; j < numStats; j++){
 			int tag = stats[j].tag;
@@ -100,23 +106,47 @@ void coordinateMemory(){
 			if(tag == VIR_DOMAIN_MEMORY_STAT_UNUSED){
 				curDomainUnusedMemory = stats[j].val;
 			}
+			if(tag == VIR_DOMAIN_MEMORY_STAT_ACTUAL_BALLOON){
+				curDomainBalloonSize = stats[j].val;
+			}
 		}
 		
 		//calculate ratio of unused memory to available
 		double ratio = (double)(curDomainUnusedMemory)/(double)(curDomainAvailableMemory);
 		
+		printf("Max Domain Available Memory: %lu\n",maxMemAvailable);
+		printf("Current Domain Balloon Size: %llu\n", curDomainBalloonSize);
 		printf("Current Domain Available Memory: %llu\n",curDomainAvailableMemory);
 		printf("Current Domain Unused Memory: %llu\n", curDomainUnusedMemory);
 		printf("Ratio of Unused to Available: %f\n", ratio);
 		
 		/*****************************************************
 		* Here's the memory policy:
-		* if a guest OS has less than 20% of it's memory unused, set the memory pool to 150% of it's current value
-		* if a guest OS is using less than 20% of it's available memory, decrease the memory pool to 70% of it's current size		
+		* if a guest OS has less than 10% of it's memory unused, set the memory pool to 150% of it's current value
+		* if a guest OS is using less than 60% of it's available memory, decrease the memory pool to 70% of it's current size		
 		******************************************************/
+		
+		//test case, set memory size to 400000
+		long newMemSizeTest = 400000;
+		printf("TEST: setting available memory to 400000\n");
+		int res = virDomainSetMemoryFlags(curDomain,newMemSizeTest,VIR_DOMAIN_AFFECT_LIVE);
+		printf("Finished with test\n");
+		if(res == 0){
+			printf("Successfully set memory size to 400000\n");
+		}
+		else{
+			printf("Could not set memory size\n");
+		}
+		
+		
+		
+		//check for using less than 10%
+		if(ratio < .1){
+			
+		}
 	}	
-	
 	//last thing, free the hypervisor connection
+	printf("Closing hypervisor connection\n");
 	virConnectClose(hypervisorConnection);
 }
 
