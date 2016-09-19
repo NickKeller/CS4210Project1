@@ -3,10 +3,11 @@
 #include <libvirt/libvirt.h>
 #include <unistd.h>
 
-#define DEBUG 1
+#define DEBUG 0
 
 void error(char* message);
 void coordinateMemory(void);
+void test(virDomainPtr domain, char* msg);
 
 int main (int argc, char* argv[]){
 	//make sure there is one argument
@@ -70,22 +71,26 @@ void coordinateMemory(){
 		virDomainPtr curDomain = domains[i];
 		if(!curDomain){
 			printf("Domain at %d is null\n",i);
-			//exit(-1);
+			exit(-1);
 		}
-		
+		printf("CurDomain:%p\n",curDomain);
 		int domainID = virDomainGetID(curDomain);
 		printf("Domain ID is %d\n",domainID);
 		//since there is no performance check, set the stat collection period to 1, then sleep
 		printf("Setting memory stats period\n");
-		//virDomainSetMemoryStatsPeriod(curDomain,1,VIR_DOMAIN_AFFECT_LIVE);
+		virDomainSetMemoryStatsPeriod(curDomain,1,VIR_DOMAIN_AFFECT_LIVE);
 		printf("Sleeping for 1 second\n");
-		//sleep(1);
+		sleep(1);
 		//get all memory stats for this domain
 		
 		//max memory available
 		unsigned long maxMemAvailable = virDomainGetMaxMemory(curDomain);
-				
-		virDomainMemoryStatPtr stats = calloc(1, sizeof(virDomainMemoryStatPtr));
+		printf("Max Memory available for Domain %d is: %lu\n",domainID,maxMemAvailable);
+		//continue;
+		
+		virDomainMemoryStatPtr stats = NULL;
+		stats = calloc(9, sizeof(*stats));
+		
 		//memory stats
 		printf("Getting memory stats\n");
 		int numStats = virDomainMemoryStats(curDomain, stats, 9, 0);
@@ -95,11 +100,12 @@ void coordinateMemory(){
 		unsigned long long curDomainAvailableMemory = 0;
 		unsigned long long curDomainUnusedMemory = 0;
 		unsigned long long curDomainBalloonSize = 0;
+		
 		//loop through the stats, since you can't index by tag......
 		for(int j = 0; j < numStats; j++){
 			int tag = stats[j].tag;
-			printf("TAG:%d, %s\n",tag, statTagsMapping[tag]);
-			printf("VAL:%lld\n",stats[j].val);
+			if(DEBUG) printf("TAG:%d, %s\n",tag, statTagsMapping[tag]);
+			if(DEBUG) printf("VAL:%lld\n",stats[j].val);
 			if(tag == VIR_DOMAIN_MEMORY_STAT_AVAILABLE){
 				curDomainAvailableMemory = stats[j].val;
 			}
@@ -122,14 +128,15 @@ void coordinateMemory(){
 		
 		/*****************************************************
 		* Here's the memory policy:
-		* if a guest OS has less than 10% of it's memory unused, set the memory pool to 150% of it's current value
+		* if a guest OS is using 80% or more of it's available memory, set the memory pool to 150% of it's current value, or max available memory, whichever is less
 		* if a guest OS is using less than 60% of it's available memory, decrease the memory pool to 70% of it's current size		
 		******************************************************/
 		
 		//test case, set memory size to 400000
-		long newMemSizeTest = 400000;
-		printf("TEST: setting available memory to 400000\n");
-		int res = virDomainSetMemoryFlags(curDomain,newMemSizeTest,VIR_DOMAIN_AFFECT_LIVE);
+		unsigned long newMemSizeTest = (400l*1024l);
+		printf("TEST: setting available memory to %lu\n",newMemSizeTest);
+		printf("Domain: %p, New Mem Size: %ld, flags: %d\n",curDomain, newMemSizeTest, VIR_DOMAIN_AFFECT_LIVE);
+		int res = virDomainSetMemory(curDomain,newMemSizeTest);
 		printf("Finished with test\n");
 		if(res == 0){
 			printf("Successfully set memory size to 400000\n");
@@ -139,8 +146,9 @@ void coordinateMemory(){
 		}
 		
 		
+		//unsigned long newMemSize = curDomainAvailableMemory
 		
-		//check for using less than 10%
+		//check for using less than 60%
 		if(ratio < .1){
 			
 		}
@@ -148,6 +156,21 @@ void coordinateMemory(){
 	//last thing, free the hypervisor connection
 	printf("Closing hypervisor connection\n");
 	virConnectClose(hypervisorConnection);
+}	
+
+void test(virDomainPtr domain, char * msg){
+	printf("%s",msg);
+	int domainID = virDomainGetID(domain);
+	printf("Domain id is:%d\n",domainID);
+	unsigned long newMemSizeTest = (500l*1024l);
+	printf("________TESTING SETTING MEMORY_______________\n");
+	int res = virDomainSetMemory(domain,newMemSizeTest);
+	if(res == 0){
+		printf("Successfully set memory size to %lu\n",newMemSizeTest);
+	}
+	else{
+		printf("Could not set memory size\n");
+	}
 }
 
 

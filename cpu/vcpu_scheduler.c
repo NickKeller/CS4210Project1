@@ -3,7 +3,7 @@
 #include <libvirt/libvirt.h>
 #include <string.h>
 
-#define DEBUG 0
+#define DEBUG 1
 #define PCPU0 (1 << 0)
 #define PCPU1 (1 << 1)
 #define PCPU2 (1 << 2)
@@ -27,6 +27,17 @@ typedef struct pCPUStats {
 	unsigned long long totalTime;
 	int cpuNum;
 } pCPUStats;
+
+typedef struct vCPUStat{
+	unsigned long long cpuTime;
+	unsigned long long pcpuTime;//amount of pCPU time used
+	unsigned long long userTime;
+	unsigned long long systemTime;
+	unsigned long long totalTime;
+	int pCPU;
+	double utilization;
+	virDomainPtr domain;
+} vCPUStat;
 
 
 int main(int argc, char* argv[]){
@@ -175,6 +186,8 @@ void vcpuSchedule(){
 	if(DEBUG)
 		printf("There are %d domains running\n",numDomains);
 	
+	//also get space for the vcpu stats, 1vCPU per domain
+	vCPUStat * individualVCPUStats = calloc(numDomains, sizeof(vCPUStat));
 	
 	
 	//for now, print out stats of the single vcpu for each domain
@@ -184,30 +197,76 @@ void vcpuSchedule(){
 		//int domainID = virDomainGetID(curDomain);
 		virTypedParameterPtr params;
 		int nparams = virDomainGetCPUStats(curDomain, NULL, 0, -1, 1, 0);
+		printf("Can print out %d params per vCPU\n",nparams);
 		params = calloc(nparams, sizeof(virTypedParameter));
 		int numStats = virDomainGetCPUStats(curDomain, params, nparams, -1, 1, 0);
 		if(numStats == -1){
 			error("Error fetching vCPU stats");
 		}
 		
+		printf("NumStats:%d\n",numStats);
 		//let's figure out which parameter means what
+		unsigned long long runningTotal = 0;
 		for(int j = 0; j < numStats; j++){
-			printf("FIELD: %s\n",params[j].field);
-			printf("TYPE: %d\n",params[j].type);
-			printf("DATA:\n");
-			printf("%d",params[j].value.i);
-			printf("%u",params[j].value.ui);
-			printf("%lld",params[j].value.l);
-			printf("%llu",params[j].value.ul);
-			printf("%f",params[j].value.d);
-			printf("%c",params[j].value.b);
-			printf("%s",params[j].value.s);
-			//char* format = getFormat(params[j].type);
-			//printf(format,params[j].value);
+			virTypedParameter current = params[j];
+			printf("INT:%d\n",current.value.i);
+			printf("FIELD: %s\n",current.field);
+			printf("TYPE: %d\n",current.type);
+						
+			printf("DATA:");
+			switch(current.type){
+				case 1: //int
+					printf("%d\n",current.value.i);
+					break;
+				case 2: //unsigned int
+					printf("%u\n",current.value.ui);
+					break;
+				case 3: //long long
+					printf("%lld\n",current.value.l);
+					break;
+				case 4: //unsigned long long
+					printf("%llu\n",current.value.ul);
+					break;
+				case 5: //double
+					printf("%f\n",current.value.d);
+					break;
+				case 6: //boolean (really char)
+					printf("%c\n",current.value.b);
+					break;
+				case 7: //char *
+					printf("%s\n",current.value.s);
+					break;
+				default:
+					error("Unknown format\n");
+			}
 			printf("\n");
+			runningTotal += current.value.ul;
+			if(strcmp(current.field,"cpu_time") == 0){
+				individualVCPUStats[i].cpuTime = current.value.ul;
+			}
+			if(strcmp(current.field,"user_time") == 0){
+				individualVCPUStats[i].userTime = current.value.ul;
+			}
+			if(strcmp(current.field,"system_time") == 0){
+				individualVCPUStats[i].systemTime = current.value.ul;
+			}
 		}
-		
+		individualVCPUStats[i].totalTime = runningTotal;
+		individualVCPUStats[i].domain = curDomain;		
 	}
+	
+	
+	//get the usage/utilization for each vcpu, get which pcpu it's running on(virdomaingetvcpus)
+	//figure out each pCPU load, qsort on it
+	//for each pCPU
+	//if at end of list
+	//	nothing to do, quit out of loop
+	//if 1 vCPU assigned
+	//	continue
+	//if >1 vCPU assigned
+	//	take vCPU with lowest utilization(lowest total time)
+	//	move it to pCPU with lowest load, then quit
+	//
 	
 	//last thing, finish up and close the connection
 	virConnectClose(hypervisorConnection);
@@ -218,18 +277,27 @@ char* getFormat(int type){
 	switch(type){
 		case 1: //int
 			format = "%d";
+			break;
 		case 2: //unsigned int
 			format = "%u";
+			break;
 		case 3: //long long
 			format = "%lld";
+			break;
 		case 4: //unsigned long long
 			format = "%llu";
+			break;
 		case 5: //double
 			format = "%f";
+			break;
 		case 6: //boolean (really char)
 			format = "%c";
+			break;
 		case 7: //char *
 			format = "%s";
+			break;
+		default:
+			error("Unknown format\n");
 	}
 	return format;
 }
