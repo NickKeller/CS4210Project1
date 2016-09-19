@@ -19,7 +19,10 @@ int main (int argc, char* argv[]){
 		printf("Interval is: %d\n",interval);
 	}
 	
-	coordinateMemory();	
+	while(1){
+		coordinateMemory();	
+		sleep(interval);
+	}
 }
 
 void coordinateMemory(){
@@ -118,6 +121,7 @@ void coordinateMemory(){
 		}
 		
 		//calculate ratio of unused memory to available
+		//ratio means that X% of memory is unused. i.e: .7 means 70% of memory is unused
 		double ratio = (double)(curDomainUnusedMemory)/(double)(curDomainAvailableMemory);
 		
 		printf("Max Domain Available Memory: %lu\n",maxMemAvailable);
@@ -128,30 +132,36 @@ void coordinateMemory(){
 		
 		/*****************************************************
 		* Here's the memory policy:
-		* if a guest OS is using 80% or more of it's available memory, set the memory pool to 150% of it's current value, or max available memory, whichever is less
-		* if a guest OS is using less than 60% of it's available memory, decrease the memory pool to 70% of it's current size		
+		* 1-if a guest OS is using 80% or more of it's available memory, set the memory pool to 150% of it's current value, or max available memory, whichever is less
+		* 2-if a guest OS is using less than 60% of it's available memory, decrease the memory pool to 70% of it's current size		
 		******************************************************/
 		
-		//test case, set memory size to 400000
-		unsigned long newMemSizeTest = (400l*1024l);
-		printf("TEST: setting available memory to %lu\n",newMemSizeTest);
-		printf("Domain: %p, New Mem Size: %ld, flags: %d\n",curDomain, newMemSizeTest, VIR_DOMAIN_AFFECT_LIVE);
-		int res = virDomainSetMemory(curDomain,newMemSizeTest);
-		printf("Finished with test\n");
+		unsigned long newMemSize = curDomainBalloonSize;
+		
+		//check for more than 60% free memory
+		if(ratio > .6){
+			newMemSize = newMemSize * .7;
+		}
+		//check for less than 20% free memory
+		else if(ratio < .2){
+			newMemSize = newMemSize * 1.5;
+			if(newMemSize > maxMemAvailable){
+				newMemSize = maxMemAvailable;
+				printf("Warning: Memory increase needed, but cannot increase above maximum memory allowed. Memory set to %lu kB\n",newMemSize);
+			}
+		}
+		
+		//time to set the memory size
+		int res = virDomainSetMemory(curDomain,newMemSize);
 		if(res == 0){
-			printf("Successfully set memory size to 400000\n");
+			printf("Successfully set memory size to %lu kB\n", newMemSize);
 		}
 		else{
-			printf("Could not set memory size\n");
+			printf("Could not set memory size to %lu kB\n", newMemSize);
 		}
 		
-		
-		//unsigned long newMemSize = curDomainAvailableMemory
-		
-		//check for using less than 60%
-		if(ratio < .1){
-			
-		}
+		//free up the memory used by the domain, to avoid memory leaks
+		virDomainFree(curDomain);
 	}	
 	//last thing, free the hypervisor connection
 	printf("Closing hypervisor connection\n");

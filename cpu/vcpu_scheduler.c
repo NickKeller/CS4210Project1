@@ -17,6 +17,7 @@ void error(char* message);
 void printUCharAsBinary(unsigned char n);
 void vcpuSchedule(void);
 char* getFormat(int type);
+int cmpUtil(const void* p1, const void* p2);
 
 
 typedef struct pCPUStats {
@@ -38,6 +39,11 @@ typedef struct vCPUStat{
 	double utilization;
 	virDomainPtr domain;
 } vCPUStat;
+
+typedef struct pCPUUtil{
+	double utilization;
+	int cpu;
+} pCPUUtil;
 
 
 int main(int argc, char* argv[]){
@@ -79,6 +85,10 @@ void vcpuSchedule(){
 	
 	//prep to store the information
 	individualPCPUStats = calloc(numCPUS,sizeof(pCPUStats));
+	//stores the physical cpu time. Used in calculation of individual vcpu utilization
+	unsigned long long *pCPUTime = calloc(numCPUS,sizeof(unsigned long long));
+	pCPUUtil * pCPUUtilization = calloc(numCPUS,sizeof(pCPUUtil));
+		
 	
 	//get cpu time for individual cpus
 	for(int i = 0; i < numCPUS;i++){
@@ -111,6 +121,7 @@ void vcpuSchedule(){
 				}
 			}
 			individualPCPUStats[i].totalTime = runningTotal;
+			pCPUTime[i] = runningTotal;
 		}		
 	}
 	
@@ -209,7 +220,6 @@ void vcpuSchedule(){
 		unsigned long long runningTotal = 0;
 		for(int j = 0; j < numStats; j++){
 			virTypedParameter current = params[j];
-			printf("INT:%d\n",current.value.i);
 			printf("FIELD: %s\n",current.field);
 			printf("TYPE: %d\n",current.type);
 						
@@ -253,7 +263,43 @@ void vcpuSchedule(){
 		}
 		individualVCPUStats[i].totalTime = runningTotal;
 		individualVCPUStats[i].domain = curDomain;		
+		
+		//get some more vcpu information
+		virVcpuInfoPtr info = calloc(1,sizeof(virVcpuInfo));
+		int numInfo = virDomainGetVcpus(curDomain,info,1,NULL,0);
+		if(numInfo == -1){
+			error("ERROR, could not get vcpu information for domain\n");
+		}
+		
+		virVcpuInfo vCPUInfo = info[0];
+		
+		individualVCPUStats[i].pCPU = vCPUInfo.cpu;
+		individualVCPUStats[i].pcpuTime = vCPUInfo.cpuTime;
+		individualVCPUStats[i].utilization = (double)(vCPUInfo.cpuTime / pCPUTime[vCPUInfo.cpu]);	
+		
+		printf("vCPU Number: %u\n",vCPUInfo.number);
+		printf("vCPUState: %d\n",vCPUInfo.state);
+		printf("vCPUcpuTime: %llu\n", vCPUInfo.cpuTime);
+		printf("vCPU_Num: %d\n",vCPUInfo.cpu);	
+		printf("Utilization: %f\n",individualVCPUStats[i].utilization);
 	}
+	
+	//time to figure out the utilization of each pCPU
+	for(int i = 0; i < numCPUS; i++){
+		unsigned long long runningTime = 0;
+		for(int j = 0; j < numDomains;j++){
+			vCPUStat current = individualVCPUStats[j];
+			//only want to add up time for the specific cpu we're on
+			if(current.pCPU == i){
+				runningTime += current.pcpuTime;
+			}			
+		}
+		pCPUUtilization[i].utilization = (double)(runningTime / pCPUTime[i]);
+		pCPUUtilization[i].cpu = i;
+	}
+	
+	//now, sort by utilization
+	qsort(pCPUUtilization,numCPUS,sizeof(pCPUUtil), cmpUtil);
 	
 	
 	//get the usage/utilization for each vcpu, get which pcpu it's running on(virdomaingetvcpus)
@@ -268,8 +314,16 @@ void vcpuSchedule(){
 	//	move it to pCPU with lowest load, then quit
 	//
 	
+	
 	//last thing, finish up and close the connection
 	virConnectClose(hypervisorConnection);
+}
+
+int cmpUtil(const void* p1, const void* p2){
+	pCPUUtil pcpu1 = *((pCPUUtil*)(p1));
+	pCPUUtil pcpu2 = *((pCPUUtil*)(p2));
+	double cmp = pcpu2.utilization - pcpu1.utilization;
+	return (int)(cmp);
 }
 
 char* getFormat(int type){
