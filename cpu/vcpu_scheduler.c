@@ -2,23 +2,9 @@
 #include <stdio.h>
 #include <libvirt/libvirt.h>
 #include <string.h>
+#include <unistd.h>
 
 #define DEBUG 1
-#define PCPU0 (1 << 0)
-#define PCPU1 (1 << 1)
-#define PCPU2 (1 << 2)
-#define PCPU3 (1 << 3)
-#define PCPU4 (1 << 4)
-#define PCPU5 (1 << 5)
-#define PCPU6 (1 << 6)
-#define PCPU7 (1 << 7)
-
-void error(char* message);
-void printUCharAsBinary(unsigned char n);
-void vcpuSchedule(void);
-char* getFormat(int type);
-int cmpUtil(const void* p1, const void* p2);
-
 
 typedef struct pCPUStats {
 	unsigned long long kernel;
@@ -43,7 +29,17 @@ typedef struct vCPUStat{
 typedef struct pCPUUtil{
 	double utilization;
 	int cpu;
+	int numVcpus;//number of vCPUS assigned to this particular pCPU
+	
 } pCPUUtil;
+
+void error(char* message);
+void printUCharAsBinary(unsigned char n);
+void vcpuSchedule(void);
+char* getFormat(int type);
+int cmpUtil(const void* p1, const void* p2);
+virDomainPtr getLowestVcpuUtil(int pcpu, vCPUStat** stats, int numDomains);
+
 
 
 int main(int argc, char* argv[]){
@@ -57,7 +53,10 @@ int main(int argc, char* argv[]){
 		printf("Interval is: %d\n",interval);
 	}
 	
-	vcpuSchedule();
+	while(1){
+		vcpuSchedule();
+		sleep(interval);
+	}
 }
 
 void vcpuSchedule(){
@@ -301,6 +300,37 @@ void vcpuSchedule(){
 	//now, sort by utilization
 	qsort(pCPUUtilization,numCPUS,sizeof(pCPUUtil), cmpUtil);
 	
+	printf("______________________________________________________________\n");
+	printf("Qsort order returned\n");
+	printf("______________________________________________________________\n");
+	for(int i = 0; i < numCPUS; i++){
+		pCPUUtil current = pCPUUtilization[i];
+		printf("CPU:%d\n",current.cpu);
+		printf("Utilization:%f\n",current.utilization);
+	}
+	
+	//now to redistribute the load
+	for(int i = 0; i < numCPUS-1; i++){//numCPUS-1 takes care of not doing anything if at end of list
+		pCPUUtil current = pCPUUtilization[i];
+		if(current.numVcpus == 1){
+			continue;
+		}
+		if(current.numVcpus > 1){
+			//get vcpu assigned to this pcpu with the lowest utilization
+			virDomainPtr toMove = getLowestVcpuUtil(current.cpu,&individualVCPUStats, numDomains);
+			//move to pCPU at the end of this list(has the lowest load)
+			int lowestCPU = pCPUUtilization[numCPUS-1].cpu;
+			//cpumap goes in reverse order, 0-7
+			unsigned char cpuMap = (char)(1 << (7-lowestCPU));
+			int res = virDomainPinVcpuFlags(toMove,0,&cpuMap,1,VIR_DOMAIN_AFFECT_LIVE);
+			if(res == -1){
+				error("ERROR, could not change VCPU\n");
+			}
+			//quit
+			break;
+		}
+	}
+	
 	
 	//get the usage/utilization for each vcpu, get which pcpu it's running on(virdomaingetvcpus)
 	//figure out each pCPU load, qsort on it
@@ -319,11 +349,32 @@ void vcpuSchedule(){
 	virConnectClose(hypervisorConnection);
 }
 
+virDomainPtr getLowestVcpuUtil(int pcpu, vCPUStat** stats, int numDomains){
+	vCPUStat* vCPUS = *stats;
+	virDomainPtr ret = vCPUS[0].domain;
+	double util = 100;
+	for(int i = 0; i < numDomains;i++){
+		vCPUStat current = vCPUS[i];
+		if(current.pCPU != pcpu)
+			continue;
+		if(current.utilization < util){
+			util = current.utilization;
+			ret = current.domain;
+		}
+	}
+	return ret;
+}
+
 int cmpUtil(const void* p1, const void* p2){
 	pCPUUtil pcpu1 = *((pCPUUtil*)(p1));
 	pCPUUtil pcpu2 = *((pCPUUtil*)(p2));
-	double cmp = pcpu2.utilization - pcpu1.utilization;
-	return (int)(cmp);
+	if(pcpu1.utilization < pcpu2.utilization){
+		return 1;
+	}
+	if(pcpu1.utilization > pcpu2.utilization){
+		return -1;
+	}
+	return 0;
 }
 
 char* getFormat(int type){
